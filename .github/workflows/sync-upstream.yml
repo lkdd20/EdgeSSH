@@ -1,0 +1,68 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: '17 0 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/sync-upstream.yml']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-main
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'lkdd20/EdgeSSH'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Merge upstream and preserve fork changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          UPSTREAM_REPOSITORY: aozorae/EdgeSSH
+          DEFAULT_BRANCH: main
+          UPSTREAM_BRANCH: main
+          GIT_TERMINAL_PROMPT: '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh auth setup-git --hostname github.com
+          workdir="$(mktemp -d "$RUNNER_TEMP/fork-sync.XXXXXX")"
+          git clone --no-tags --single-branch --branch "$DEFAULT_BRANCH" "https://github.com/$REPOSITORY.git" "$workdir"
+          cd "$workdir"
+          git remote add upstream "https://github.com/$UPSTREAM_REPOSITORY.git"
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch --no-tags upstream "$UPSTREAM_BRANCH"
+          if git merge-base --is-ancestor FETCH_HEAD HEAD; then
+            echo 'Default branch already contains upstream.'
+            exit 0
+          fi
+          set +e
+          git -c core.hooksPath=/dev/null merge --no-commit --no-ff FETCH_HEAD
+          merge_status=$?
+          set -e
+          if ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+            echo "Unable to start upstream merge (status $merge_status)." >&2
+            exit 1
+          fi
+          # Keep fork workflows because GITHUB_TOKEN cannot update workflow files.
+          git rm -r -f --ignore-unmatch .github/workflows >/dev/null
+          git restore --source=HEAD --staged --worktree -- .github/workflows
+          # Inspect unresolved conflicts before staging, which would mark them resolved.
+          unresolved="$(git diff --name-only --diff-filter=U)"
+          if [[ -n "$unresolved" ]]; then
+            printf 'Upstream conflicts require review:\n%s\n' "$unresolved" >&2
+            git merge --abort
+            exit 1
+          fi
+          git add -A
+          git -c core.hooksPath=/dev/null commit -m 'chore: sync upstream (preserve fork workflows)'
+          git push origin "HEAD:$DEFAULT_BRANCH"
