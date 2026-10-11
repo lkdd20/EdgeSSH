@@ -25,6 +25,8 @@ export interface ReconnectConfig {
   onConnect: (attempt: number) => WebSocket | Promise<WebSocket>;
   /** Optional callback invoked for every lifecycle event. */
   onLog?: (entry: ReconnectLogEntry) => void;
+  /** 确定性失败不能靠重复连接恢复；默认不改变其他通道的重连策略。 */
+  nonRetryableCloseCodes?: number[];
 }
 
 export interface ReconnectLogEntry {
@@ -53,6 +55,7 @@ export class WebSocketReconnectManager {
   private delays: number[];
   private onConnect: (attempt: number) => WebSocket | Promise<WebSocket>;
   private onLog?: (entry: ReconnectLogEntry) => void;
+  private nonRetryableCloseCodes: number[];
   private socket: WebSocket | null = null;
   private destroyed = false;
   private reconnecting = false;
@@ -65,6 +68,7 @@ export class WebSocketReconnectManager {
     this.delays = config.delays?.length ? config.delays : [...DEFAULT_DELAYS];
     this.onConnect = config.onConnect;
     this.onLog = config.onLog;
+    this.nonRetryableCloseCodes = config.nonRetryableCloseCodes ?? [];
   }
 
   /**
@@ -125,6 +129,12 @@ export class WebSocketReconnectManager {
 
     // Normal closures (user-initiated or "no status") should never reconnect.
     if (event.code === 1000 || event.code === 1005) {
+      return;
+    }
+
+    if (this.nonRetryableCloseCodes.includes(event.code)) {
+      // 重连中的 socket 也可能被拒绝；reset 同时取消计时器与尚未完成的连接工厂。
+      this.reset();
       return;
     }
 

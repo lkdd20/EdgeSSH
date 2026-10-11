@@ -1,248 +1,686 @@
-> **本项目基于 [Worker Web SSH（CF-Workers-WebSSH）](https://github.com/cmliu/CF-Workers-WebSSH) 深度开发。**<br>
-> 在上游原生 WebSSH 能力的基础上，扩展主机管理、加密云端存储、地球可视化与操作系统识别，打造面向个人管理员的云端 SSH 工作台。感谢原作者的开源贡献。
+<div align="center">
+
+# EdgeSSH · 开源 WebSSH 工作台
+
+<p><strong>浏览器里的 SSH 终端与 SFTP 文件管理，运行在你自己的 Cloudflare 上。</strong></p>
+
+把主机管理、在线终端、文件传输、进程监控与远程 HTTP 服务预览，收进一个个人服务器管理工作台，无需额外维护 SSH 中转服务器。
+
+<p><sub>An open-source, self-hosted WebSSH client on Cloudflare Workers — browser-based SSH terminal, SFTP file manager, and server monitoring.</sub></p>
+
+**Cloudflare-native · Self-hosted · Single-admin · Open source**
+
+<br />
+
+<p>
+  <a href="https://workers.cloudflare.com/"><img src="https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&amp;logoColor=white" alt="Cloudflare Workers" /></a>
+  <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&amp;logoColor=white" alt="TypeScript" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-546E7A" alt="Apache License 2.0" /></a>
+  <a href="https://edgessh-docs.pages.dev/"><img src="https://img.shields.io/badge/Docs-EdgeSSH-0B84F3" alt="EdgeSSH 产品与使用文档" /></a>
+</p>
+
+<br />
+
+<p>
+  <strong><a href="https://edgessh-docs.pages.dev/deploy/actions">快速部署</a></strong> ·
+  <a href="#功能特性">功能特性</a> ·
+  <a href="#安全设计">安全设计</a> ·
+  <a href="#本地开发">本地开发</a> ·
+  <a href="https://edgessh-docs.pages.dev/">文档站 →</a>
+</p>
+
+<br />
+
+![EdgeSSH WebSSH 工作台：全球主机总览与服务器管理](docs/images/showcase/01-dashboard.png)
+
+<sub>全部演示数据使用文档保留地址与虚构信息，不对应任何真实服务器。</sub>
+
+<br />
+
+**你的服务器 · 你的凭据 · 你的 Cloudflare · 你的 SSH 工作台**
+
+</div>
+
+<details>
+<summary><strong>快速导航 · 功能、部署与技术说明</strong></summary>
+
+- **了解产品**：[为什么是 EdgeSSH](#为什么是-edgessh) · [功能特性](#功能特性) · [当前支持](#当前支持)
+- **开始使用**：[快速部署](#快速部署) · [认证方式](#认证) · [完整部署指南](https://edgessh-docs.pages.dev/deploy/actions)
+- **了解边界**：[安全设计](#安全设计) · [信任边界](#信任边界) · [端口转发安全](#端口转发安全)
+- **参与开发**：[本地开发](#本地开发) · [项目结构](#项目结构) · [Contributing](#contributing)
+
+</details>
+
+---
+
+## 为什么是 EdgeSSH？
+
+SSH 客户端不少，WebSSH 也算不上新鲜。
+
+EdgeSSH 想解决的是另一件事：
+
+> **能不能不再维护一套 SSH 中转服务器，却依然拥有一个随时能从浏览器打开的个人 SSH 工作台？**
+
+EdgeSSH 把 WebSSH 的连接层、主机管理与工作台界面，一起部署在 Cloudflare 上。
+
+浏览器只负责交互；应用逻辑与认证交给 Cloudflare Worker；每一个 SSH 会话都由独立的 Durable Object 承载，再通过 Cloudflare TCP Sockets 连到你的服务器。
+
+<table>
+<tr>
+
+<td width="25%" valign="top">
+
+### ☁️ Cloudflare Native
+
+跑在 Cloudflare Workers 上。
+
+不用再单独维护一台 WebSSH 中转 VPS。
+
+</td>
+
+<td width="25%" valign="top">
+
+### 🧰 SSH Workspace
+
+不只是一个 Terminal。
+
+主机、文件、进程、代码片段和远程服务，都在同一个工作台里。
+
+</td>
+
+<td width="25%" valign="top">
+
+### 🔐 Self-hosted
+
+部署在你自己的 Cloudflare 账户里。
+
+数据库、Worker 和配置，全部由你掌控。
+
+</td>
+
+<td width="25%" valign="top">
+
+### 👤 Single Admin
+
+面向个人服务器管理场景。
+
+没有多租户、没有成员系统，也没有复杂的权限模型。
+
+</td>
+
+</tr>
+</table>
 
 <div align="center">
 
-# EdgeSSH
+**它不只是塞进浏览器里的一个 Terminal。**
 
-**打开浏览器，连接你的服务器。**
-
-运行于 Cloudflare Workers 的轻量 SSH 工作台<br>
-主机总览 · 交互终端 · 文件管理 · 进程监控
-
-<p>
-  <img alt="Cloudflare Workers" src="https://img.shields.io/badge/Cloudflare-Workers-F38020?style=flat-square&logo=cloudflare&logoColor=white">
-  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white">
-  <img alt="Apache 2.0" src="https://img.shields.io/badge/License-Apache%202.0-546E7A?style=flat-square">
-</p>
-
-[功能特性](#功能特性) · [界面预览](#界面预览) · [快速开始](#快速开始) · [本地开发](#本地开发) · [安全与限制](#安全与限制)
+<p><strong>它是部署在 Cloudflare 上的个人 SSH 工作台。</strong></p>
 
 </div>
 
 ---
 
-## 界面预览
+## 功能特性
+
+### 一个地方，管好你所有的服务器
+
+EdgeSSH 把散落各处的服务器连接信息，收进统一的主机库。
+
+在这里你可以：
+
+- 保存、编辑服务器信息
+- 搜索与整理主机
+- 记录系统类型与服务器所在地
+- 从 Dashboard 直接跳进 SSH
+- 用密码或 SSH 私钥认证
+- 在不同设备间访问同一份工作区
+
+主机资料与连接凭据会先用 **AES-256-GCM** 加密，再写入 D1。
+
+---
+
+### 🖥️ SSH 在线终端 · Terminal
+
+**打开浏览器，就是进了服务器。**
+
+![EdgeSSH 实时 SSH 终端](docs/images/showcase/02-ssh-terminal.png)
+
+基于 xterm.js 的交互式终端，支持：
+
+- SSH 2.0
+- PTY
+- 窗口尺寸同步
+- Keepalive
+- 全屏终端
+- UTF-8 / GB18030 / Big5
+- 密码认证
+- keyboard-interactive
+- OpenSSH 私钥认证
+
+![EdgeSSH 终端命令工作流](docs/images/showcase/03-terminal-command-workflow.png)
+
+第一次连接某台服务器时，EdgeSSH 会先展示它的 **SHA-256 Host Key Fingerprint**。
+
+只有你确认无误后，才会继续发送 SSH 凭据。
+
+---
+
+### 📁 SFTP 文件管理 · File Manager
+
+**不必为了改一个文件,再多开一个工具。**
+
+![EdgeSSH SFTP 文件管理](docs/images/showcase/05-sftp-file-manager.png)
+
+EdgeSSH 内置了一个基于 SFTP 的文件管理器：
+
+- 浏览服务器目录
+- 上传与下载
+- 新建文件夹
+- 重命名
+- 删除文件
+- 键盘导航
+- 文件类型图标
+- 从文件管理器直接跳回 SSH Terminal
+
+Terminal 与 File Manager 共用同一个 SSH 会话，切换之间不必重新连接。
+
+---
+
+### 📊 服务器进程监控 · Server Monitor
+
+![EdgeSSH 实时进程监控](docs/images/showcase/04-process-monitor.png)
+
+在 SSH 会话里就能直接看到：
+
+**CPU · Load · Memory · Swap · Processes · OS · Architecture**
+
+不需要跳出工作台,也不需要在服务器上额外装一个 Agent。
+
+---
+
+### 🔌 HTTP 端口转发 · Port Forwarding
+
+服务器上有些服务只监听：
+
+```text
+127.0.0.1:3000
+```
+
+在 EdgeSSH 里,同样可以打开它。
+
+![EdgeSSH 隔离端口转发预览](docs/images/showcase/07-isolated-web-preview.png)
+
+EdgeSSH 能借助已有的 SSH 会话,访问服务器本地的 HTTP 服务,并在浏览器里给出一个临时预览。
+
+适合这些场景:
+
+**开发服务器 · 本地 Dashboard · 管理面板 · 调试接口**
+
+如果要打开的是一个不太信任的网页,可以改用独立的 Preview Worker,把预览页面和 EdgeSSH 管理界面隔离开来。
+
+> Port Forwarding 不是一个通用反向代理。WebSocket、HTTPS 上游以及部分复杂 Web 应用,目前还有一些限制。
+
+[查看端口转发与安全说明 →](#端口转发安全)
+
+---
+
+### 📝 命令片段库 · Code Snippets
+
+![EdgeSSH 加密同步命令库](docs/images/showcase/06-command-library.png)
+
+把常用命令存下来:
+
+```bash
+docker ps
+df -h
+free -h
+journalctl -xe
+```
+
+需要的时候:
+
+**搜索 → 填入 Terminal → 检查一遍 → 执行**
+
+代码片段通过 D1 同步,而不是只存在某一个浏览器里。
+
+---
+
+### 🌍 服务器,也可以从地球上看
+
+EdgeSSH 会根据服务器的公网 IP,估算出大致地理位置,并画在 Dashboard 的地球上。
+
+点一下主机,就能从地图直接跳进对应的服务器。
+
+地球组件用的是轻量的 Canvas 球面投影,没有引入 Three.js 这类较重的 3D Runtime。
+
+> 地理位置仅用于可视化展示,不代表服务器的实时在线状态。
+
+---
+
+## 一套工作台,多种服务器管理方式
+
+```text
+                         EdgeSSH
+                            │
+        ┌───────────────────┼───────────────────┐
+        │                   │                   │
+      Hosts              Workspace           Tools
+        │                   │                   │
+    Credentials          Terminal          File Manager
+      Groups              SFTP             Monitoring
+    Locations           Sessions           Snippets
+        │                   │             Port Forward
+        └───────────────────┼───────────────────┘
+                            │
+                       Your Servers
+```
+
+不管你手上是:
+
+**VPS · Cloud VM · NAS · Home Server · Development Machine**
+
+只要它能通过公网 SSH 访问,就可以加入 EdgeSSH。
+
+---
+
+## Cloudflare-native
+
+EdgeSSH 不需要你另外部署一套 WebSSH Backend。
+
+```text
+Browser
+│
+│ HTTPS / WebSocket
+▼
+Cloudflare Worker
+│
+├── Authentication
+├── Host Management
+├── Encrypted Storage ──────→ D1
+├── Static App / API
+│
+└── Session Ticket
+        │
+        ▼
+Durable Object
+│
+│ Cloudflare TCP Socket
+▼
+SSH Server
+```
+
+SSH 握手、认证、密钥交换以及 Channel 通信,都在 Worker 一侧完成。
+
+浏览器实际连接的是你的 EdgeSSH Worker,而不是直接跟目标服务器建立 TCP 连接。
+
+### 用到的 Cloudflare 能力
+
+**Workers**
+
+跑起 EdgeSSH 的应用、API 与 SSH 协议逻辑。
+
+**Durable Objects**
+
+给每个 SSH 会话一份独立的生命周期与 WebSocket 状态。
+
+**D1**
+
+存放加密后的主机资料、管理员信息和代码片段。
+
+**TCP Sockets**
+
+从 Cloudflare 网络出发,建立到 SSH Server 的 TCP 连接。
+
+---
+
+## 认证
+
+EdgeSSH 是一个 **Single-admin Workspace**。
+
+它不是 SaaS 多租户系统,没有成员、组织,也没有角色权限。
+
+目前支持两种登录方式:
+
+<table>
+<tr>
+
+<td width="50%" valign="top">
+
+### GitHub OAuth
+
+适合想快速部署的用户。
+
+用指定的 GitHub 账号,作为唯一的管理员身份。
+
+**不需要 Cloudflare Zero Trust。**
+
+</td>
+
+<td width="50%" valign="top">
+
+### Cloudflare Access
+
+适合已经在用 Cloudflare Zero Trust 的用户。
+
+可以用邮箱 OTP,也可以接入已有的 Identity Provider。
+
+</td>
+
+</tr>
+</table>
+
+两种方式二选一即可。
+
+切换认证 Provider 不会新建一个用户工作区,也不会重新生成一份主机资料库。
+
+---
+
+## 安全设计
+
+服务器管理工具天生要经手高权限凭据,所以 EdgeSSH 一直在尽量收窄默认的攻击面。
+
+### 加密存储
+
+主机密码、私钥以及相关敏感资料,都会用 **AES-256-GCM** 加密后再存进 D1。
+
+浏览器不会长期保存 SSH 凭据。
+
+### Host Key Verification
+
+第一次连接服务器,必须确认 SSH Host Key Fingerprint。
+
+指纹一旦发生变化,会再次要求你确认。
+
+![EdgeSSH SSH 主机指纹确认](docs/images/showcase/08-host-key-verification.png)
+
+### Single-admin
+
+EdgeSSH 不开放注册,也没有多租户的数据隔离逻辑。
+
+整个实例只属于一个管理员工作区。
+
+### Session Isolation
+
+每个 SSH 会话都由 Durable Object 单独管理。
+
+会话入口使用临时票据,辅助连接也会做身份检查。
+
+### SSRF Protection
+
+连接目标必须解析到允许访问的公网地址,并且会在建立连接前检查解析结果。
+
+---
+
+### 信任边界
+
+EdgeSSH **不是一个端到端加密的 SSH Gateway**。
+
+Worker 本身就是真正的 SSH Client,建立连接时必然要处理 SSH 凭据和会话数据。
+
+所以:
+
+> **请只把 EdgeSSH 部署在你自己信任、自己掌控的 Cloudflare 账户里。**
+
+同时建议给服务器上的 SSH 用户,配置刚好够用的最小权限。
+
+---
+
+## 快速部署
+
+最推荐的方式是:
+
+### 01 · Fork
+
+把 EdgeSSH Fork 到你自己的 GitHub 账号下。
+
+### 02 · 选择认证方式
+
+GitHub OAuth:
+
+```text
+AUTH_PROVIDER=github          # Variable
+GH_CLIENT_ID=<Client ID>      # Variable
+GH_CLIENT_SECRET=<Secret>     # Secret
+GH_ADMIN=<GitHub 用户名>      # Variable
+```
+
+首次部署请按 [GitHub OAuth 五步完整教程](DEPLOYMENT.md#github-模式准备)操作：创建的是 **OAuth App**，Client ID 放 Variable，Client Secret 放 Secret，回调必须是正式入口加 `/auth/callback`。无需 Zero Trust、Access 权限或额外 GitHub PAT。
+
+**旧版点击登录报“服务暂时不可用”**：请同步含 2026-10-07 Base64 解码修复的代码，再对最新 `main` 运行 Deploy。保留原 Worker、D1 和 `ENCRYPTION_KEY`；不是靠扩大 Token 权限或换密钥解决。新版 Deploy 会自动检查 GitHub 登录入口与工作区状态。
+
+或者 Cloudflare Access:
+
+```text
+AUTH_PROVIDER=cloudflare      # Variable,默认值
+ADMIN_EMAIL=<管理员邮箱>       # Variable
+```
+
+从旧版升级时,请将 `GITHUB_CLIENT_ID`、`GITHUB_CLIENT_SECRET`、`GITHUB_ADMIN`、`GITHUB_ADMIN_ID`
+分别迁移为 `GH_CLIENT_ID`、`GH_CLIENT_SECRET`、`GH_ADMIN`、`GH_ADMIN_ID`。GitHub 保留 `GITHUB_`
+前缀,旧名称无法作为 Actions Variable 或 Secret 使用。
+
+### 03 · 添加 Cloudflare Token
+
+无论选择哪种认证方式,都要在 GitHub Actions Secrets 里加入 `CLOUDFLARE_API_TOKEN`。
+
+### 04 · Run workflow
+
+运行 `Deploy` Workflow。
+
+剩下的交给 EdgeSSH 自动完成:
+
+**Worker → Durable Object → D1 → Migration → Secrets → Deployment**
+
+不用你手动去复制:
+
+```text
+D1 Database ID
+Access AUD
+Team Domain
+Random Encryption Key
+```
 
 <div align="center">
 
-![EdgeSSH 演示界面](docs/images/edgessh-dashboard-demo.png)
+### [查看完整部署指南 →](https://edgessh-docs.pages.dev/deploy/actions)
 
-<sub>演示数据使用保留地址，不对应任何真实服务器。</sub>
+认证配置、API Token 权限、自定义域名、Preview Worker、升级与迁移,都在文档站里有详细说明。
 
 </div>
 
-## 功能特性
+---
 
-<table>
-  <tr>
-    <td width="50%" valign="top">
-      <h3>🗂️ 主机管理</h3>
-      <p>集中保存服务器资料与连接凭据，支持搜索、分组筛选与编辑。从列表直接进入工作台，无需反复输入连接信息。</p>
-    </td>
-    <td width="50%" valign="top">
-      <h3>🌍 地球可视化</h3>
-      <p>以可交互地球呈现主机地理位置，支持点位连接、刷新定位，配合城市与国旗展示服务器分布。</p>
-    </td>
-  </tr>
-  <tr>
-    <td valign="top">
-      <h3>⌨️ 浏览器终端</h3>
-      <p>基于 xterm.js，支持交互式 Shell、窗口尺寸同步、全屏与会话日志，适配桌面和移动端，工作台支持中英文切换。</p>
-    </td>
-    <td valign="top">
-      <h3>📁 SFTP 文件管理</h3>
-      <p>在终端旁浏览远程目录，上传与下载文件、新建目录、重命名，以及删除文件或空目录。</p>
-    </td>
-  </tr>
-  <tr>
-    <td valign="top">
-      <h3>📊 实时进程面板</h3>
-      <p>通过独立通道查看远端进程与 CPU、负载、内存和 Swap 信息，无需离开 SSH 工作台。</p>
-    </td>
-    <td valign="top">
-      <h3>🐧 系统自动识别</h3>
-      <p>通过 SSH 命令探测操作系统，记录系统版本与架构，并以品牌色圆角图标区分常见系统与发行版。</p>
-    </td>
-  </tr>
-</table>
+## 当前支持
 
-### 不只是一个终端
+| 能力 | 支持情况 |
+| --- | --- |
+| SSH | SSH 2.0 / Shell / PTY / Resize / Keepalive |
+| SFTP | SFTP v3 |
+| Password | ✅ |
+| keyboard-interactive | ✅ 单密码提示 |
+| Ed25519 | ✅ |
+| RSA | ✅ |
+| ECDSA | ✅ P-256 / P-384 / P-521 |
+| File Manager | ✅ |
+| Process Monitor | ✅ |
+| OS Detection | ✅ |
+| Code Snippets | ✅ |
+| HTTP Port Forward | ✅ |
+| Multiple Admins | ❌ |
+| SCP | ❌ |
+| ProxyJump | ❌ |
+| SSH Agent | ❌ |
+| Encrypted Private Keys | 暂不支持 |
 
-- **边缘原生**：Worker 通过 Cloudflare TCP Sockets 直接连接 SSH 服务器，无需额外部署 SSH 中转服务，每个会话由 Durable Object 隔离。
-- **身份保护**：使用 Cloudflare Zero Trust Access 认证管理员，不提供匿名连接入口或本地注册登录。
-- **加密存储**：主机资料、密码、私钥与指纹通过 AES-256-GCM 加密后保存到 D1，浏览器不持久化连接凭据。
-- **指纹确认**：首次连接时展示服务器 SHA-256 指纹，确认后才发送 SSH 凭据。
-- **灵活连接**：支持密码、单密码提示的 keyboard-interactive，以及未加密 OpenSSH 私钥认证；支持 UTF-8、GB18030、Big5 终端编码。
-- **轻量实现**：TypeScript + Vite + Web Crypto；地球采用 Canvas 球面投影，不引入 Three.js 等大型三维依赖。
+单一管理员工作区,最多可以保存 **200 台主机**。
 
-## 工作原理
+SFTP 单文件上传和下载的上限是 **64 MiB**。
+
+---
+
+## 端口转发安全
+
+EdgeSSH 的 Port Forward 提供两种模式。
+
+### Trusted
+
+直接走 EdgeSSH 主 Worker。
+
+适用于:
+
+> **你自己开发、自己部署、自己信得过的网页。**
+
+这种模式和 EdgeSSH 管理界面共享浏览器 Origin,所以不建议用来打开不可信的站点。
+
+### Isolated
+
+通过独立的 Preview Worker 提供页面。
+
+适用于:
+
+> **没法完全信任的远程 Web 应用。**
+
+Preview Worker 和 EdgeSSH 主界面运行在不同的 Origin 上,能减少被代理页面反过来调用管理 API 的风险。
+
+完整的安全模型、生命周期、Cookie 处理和当前的代理兼容范围,请看:
+
+**[EdgeSSH 文档站 →](https://edgessh-docs.pages.dev/)**
+
+---
+
+## 本地开发
+
+Requirements:
 
 ```text
-浏览器 · 主机总览 / xterm.js / SFTP / 进程面板
-    │ HTTPS / WebSocket · Cloudflare Access 身份认证
-    ▼
-Cloudflare Worker
-    ├── 静态资源与 API
-    ├── 主机资料加密读写 ──→ D1
-    └── 一次性会话票据
-            ▼
-    Durable Object · 每会话 SSH 客户端
-            │ Cloudflare TCP Socket
-            ▼
-        公网 SSH 服务器
+Node.js >= 22.12
+npm
+Cloudflare Wrangler
 ```
 
-SSH 握手、密钥交换、认证与通道逻辑在 Worker 内完成。浏览器连接的是 Worker，而不是直接建立到服务器的 TCP 连接。
-
-## 快速开始
-
-### 环境准备
-
-- Node.js **22.12.0 或更高版本**，以及 npm。
-- 可使用 Workers、Durable Objects 与 D1 的 Cloudflare 账户。
-- 自定义域名及 Cloudflare Zero Trust Access 应用。
-- 一台你有权访问的公网 SSH 服务器。
-
-### 配置 Cloudflare Zero Trust Access
-
-EdgeSSH 没有独立的本地登录系统，正式入口必须先经过 Cloudflare Zero Trust Access。首次部署时请先完成：
-
-1. 在 **Zero Trust > Access controls（访问控制）> Applications（应用程序）** 创建 **Self-hosted and private（自托管和私有）** 应用，并绑定 EdgeSSH 的自定义域名。
-2. 添加一条 **Allow（允许）** 策略，使用 **Include > Emails** 明确填写管理员邮箱；不要使用 `Everyone（所有人）` 或 `Bypass（绕过）`。
-3. 选择 **Identity Provider（标识提供程序）**。个人部署可使用 **One-time PIN（一次性 PIN）**；新建 Zero Trust 组织若没有该选项，需要先到 **Integrations（集成）> Identity providers（标识提供程序）** 手动添加。
-4. 从 Access 应用中取得 **Application Audience (AUD) Tag（应用程序受众 (AUD) 标签）**，并从 Zero Trust **Settings（设置）** 取得 **Team Domain（团队域）**。
-5. 将它们分别写入 `ACCESS_AUD` 与 `ACCESS_TEAM_DOMAIN` Worker Secret。
-
-完整的控制台点击步骤、OTP 配置、参数获取和故障排查见 **[Cloudflare Zero Trust 配置指南](docs/ZERO_TRUST.md)**。
-
-### 获取项目
+Clone:
 
 ```bash
 git clone https://github.com/aozorae/EdgeSSH.git
 cd EdgeSSH
-npm ci
-```
 
-### 配置与部署
-
-> [!IMPORTANT]
-> 本项目面向**单管理员**使用。Access 策略应仅允许管理员的明确身份，不要配置 Everyone 或 Bypass。缺少 Access 配置时，受保护 API 会拒绝访问，不会降级为匿名网关。
-
-1. 在 Cloudflare 控制台复用或创建 D1 数据库，并调整 `wrangler.toml` 中的 Worker 名称、自定义域名与 D1 `database_id`，**不要直接使用仓库中原部署环境的资源 ID**。
-2. 在 Zero Trust 控制台创建 Self-hosted Access 应用，只允许管理员的明确邮箱或身份，并记下 Team Domain 与 Application Audience (AUD) Tag。
-3. 在 GitHub 配置一个 Actions Variable 和一个 Actions Secret，首次运行 `Deploy` workflow；它会自动检查项目、迁移 D1 并创建或更新 Worker。
-4. Worker 首次出现后，在 Cloudflare 控制台的 `Workers & Pages > 你的 Worker（默认 edgessh）> Settings > Variables and Secrets` 中添加三个运行时 Secret。保存并部署这些设置后即可通过 Access 入口验收。
-
-| 配置 | 类型与位置 | 用途 |
-| --- | --- | --- |
-| `DB` | `wrangler.toml` 中的 D1 binding | 保存加密主机资料 |
-| `SSH_SESSIONS` | `wrangler.toml` 中的 Durable Object binding | 隔离 SSH 会话 |
-| `ASSETS` | `wrangler.toml` 中的静态资源 binding | 提供前端资源 |
-| `ACCESS_TEAM_DOMAIN` | Cloudflare Worker Secret | Access 团队域名，如 `my-team.cloudflareaccess.com`，不含协议和路径 |
-| `ACCESS_AUD` | Cloudflare Worker Secret | Access 应用的 Application Audience (AUD) Tag |
-| `ENCRYPTION_KEY` | Cloudflare Worker Secret | 32 字节安全随机密钥的标准 Base64 |
-| `CONNECT_TIMEOUT_MS` | 可选普通变量 | TCP 建连超时；仓库已设为 `10000`，通常无需填写 |
-
-生产运行时只需在 Cloudflare 控制台填写 `ACCESS_TEAM_DOMAIN`、`ACCESS_AUD` 与 `ENCRYPTION_KEY` 三个 Worker Secret。`DB`、`SSH_SESSIONS` 与 `ASSETS` 是部署时创建的绑定，不是环境变量；`CONNECT_TIMEOUT_MS` 已有默认配置，也无需重复添加。
-
-**首次部署才生成 `ENCRYPTION_KEY`，后续部署始终复用原值。** 丢失或直接替换密钥会导致已有资料无法解密。密钥只粘贴到 Cloudflare 的 Secret 输入框，不要写入源码、`wrangler.toml`、GitHub Actions 或提交记录。
-
-完整配置顺序、安全边界与验收清单见 [部署指南](DEPLOYMENT.md)。
-
-### GitHub Actions 自动部署
-
-仓库内置的 `Deploy` workflow 会在推送到 `main` 后自动检查、迁移 D1 并部署，也可在 Actions 页面手动触发。首次使用前，在仓库的 `Settings > Secrets and variables > Actions` 中配置：
-
-| 名称 | GitHub 配置类型 | 用途 |
-| --- | --- | --- |
-| `CLOUDFLARE_ACCOUNT_ID` | Variable | Cloudflare 账户 ID |
-| `CLOUDFLARE_API_TOKEN` | Secret | 具备 Workers 部署和 D1 迁移权限的 API Token |
-
-Action 只需要这两项部署凭据。创建 API Token 时，可使用 Cloudflare 的 `Edit Cloudflare Workers` 模板并补充 `D1: Edit`，再将 Account 与 Zone Resources 限制到实际使用的账户和域名；该模板会覆盖 Worker 与自定义域名部署所需权限。`ACCESS_TEAM_DOMAIN`、`ACCESS_AUD` 与 `ENCRYPTION_KEY` 只保存在 Cloudflare Worker Secrets 中，普通部署不会读取或覆盖它们。API Token 属于敏感信息，必须使用 GitHub Secret，不能保存为普通 Variable。
-
-## 本地开发
-
-安装依赖并准备本地变量：
-
-```bash
 npm ci
 cp .env.example .dev.vars
 npx wrangler d1 migrations apply DB --local
 npm run dev
 ```
 
-按部署指南在 `.dev.vars` 中填写所需配置。本地开发仍保留 Access 身份校验，不提供匿名绕过；本地变量文件不得提交。
+前端开发:
 
-需要前端热更新时，在另一个终端运行 `npm run dev:web`。Vite 默认位于 `http://localhost:5173`，将 `/api` 代理到本地 Worker 的 `8787` 端口；公网目标限制在本地同样生效。
+```bash
+npm run dev:web
+```
 
-| 命令 | 说明 |
+### 常用命令
+
+| Command | Description |
 | --- | --- |
-| `npm run dev` | 构建前端并启动本地 Worker |
-| `npm run dev:web` | 启动 Vite 前端开发服务器 |
-| `npm run build:web` | 构建前端到 `dist/` |
-| `npm run typecheck` | 检查 Worker 与前端类型 |
-| `npm test` | 运行测试 |
-| `npm run check` | 类型检查、测试与部署 dry-run（包含前端构建） |
-| `npm run deploy` | 构建前端并部署 Worker |
+| `npm run dev` | Build frontend and start local Worker |
+| `npm run dev:web` | Start Vite frontend |
+| `npm run build:web` | Build frontend |
+| `npm run typecheck` | TypeScript check |
+| `npm test` | Run tests |
+| `npm run test:browser` | Browser regression tests |
+| `npm run showcase` | Regenerate privacy-safe README screenshots with local Chrome |
+| `npm run check` | Full validation |
+| `npm run deploy` | Deploy to Cloudflare |
+
+---
 
 ## 项目结构
 
 ```text
 EdgeSSH/
-├── .github/workflows/ # GitHub Actions 自动部署
-├── frontend/          # 主机总览、地球可视化与 SSH 工作台
+├── .github/workflows/    GitHub Actions deployment
+├── frontend/             Web workspace
 ├── src/
-│   ├── accounts/      # Access 认证、主机管理与加密存储
-│   ├── backend/       # 会话生命周期、SFTP 与系统信息探测
-│   ├── ssh/           # SSH 协议、认证、密码学与通道
-│   └── worker.ts      # HTTP、API 与 WebSocket 入口
-├── migrations/        # D1 数据库迁移
-├── tests/             # 自动化测试
-├── DEPLOYMENT.md      # 部署与验收指南
-└── wrangler.toml      # Worker 与资源绑定配置
+│   ├── accounts/         Authentication & encrypted storage
+│   ├── backend/          Sessions, SFTP & system detection
+│   ├── ssh/              SSH protocol implementation
+│   └── worker.ts         Worker entry
+├── migrations/           D1 migrations
+├── tests/                Tests
+├── DEPLOYMENT.md         Deployment documentation
+└── wrangler.toml         Cloudflare configuration
 ```
 
-## 安全与限制
+---
 
-### 安全边界
+## 上游项目
 
-- **不是端到端加密**：Worker 是实际的 SSH 客户端，会在会话内处理明文凭据。请仅部署到可信账户，并使用最小权限的 SSH 账号或密钥。
-- 主机资料绑定 Access 身份；会话使用一次性票据，辅助通道使用附着令牌，并检查同源请求。
-- 连接目标仅限公网地址；域名解析后校验目标 IP，降低 SSRF 与 DNS 重绑定风险。
-- 地理定位会向外部定位服务发送服务器公网 IP，不发送 SSH 凭据或命令；位置点位**不代表在线状态**。
-- 建议通过受 Access 保护的自定义域名访问；若保留 `workers.dev` 诊断入口，不应将其视为公开 SSH 入口。
+EdgeSSH 基于:
 
-### 当前支持范围
+### [Worker Web SSH / CF-Workers-WebSSH](https://github.com/cmliu/CF-Workers-WebSSH)
 
-| 类别 | 支持情况 |
-| --- | --- |
-| 会话 | SSH 2.0、交互式 Shell、PTY、窗口尺寸同步、Keepalive |
-| 文件协议 | SFTP v3；单文件上传与下载上限 64 MiB；仅删除空目录 |
-| 私钥认证 | 未加密 OpenSSH Ed25519、RSA、ECDSA P-256/P-384/P-521 |
-| 主机管理 | 每个身份最多 200 台；不支持团队共享 |
-| 终端编码 | UTF-8、GB18030、Big5，取决于浏览器解码支持 |
+持续开发而来。
 
-暂不支持加密私钥、PEM/PKCS#8 私钥、SSH Agent、多因素键盘交互认证、SCP、端口转发、ProxyJump、SSH 压缩与会话内 rekey；不支持出站 TCP 25 端口。
+在原有的 Cloudflare WebSSH 能力之上,EdgeSSH 又加上了:
 
-## 参与贡献
+**Host Management · Encrypted Storage · File Manager · Monitoring · GitHub OAuth · Port Forwarding · Code Snippets · Globe Visualization**
 
-欢迎通过 Issue 反馈问题或通过 Pull Request 提交改进。提交前请运行 `npm run check`；涉及连接、文件传输或进程面板的改动，请使用真实且已获授权的 SSH 目标验证。
+感谢原作者 **CM / cmliu** 打下的这份开源基础。
 
-反馈时请附上复现步骤和必要的环境信息，**不要上传密码、私钥、Access Token 或未脱敏的日志**。
+---
 
-## 贡献者
+## 特别致谢
 
-- [CM / cmliu](https://github.com/cmliu)：原作者，完成项目的初始设计与核心实现。
-- [aozorae](https://github.com/aozorae)：当前维护者。
+特别感谢 [Linux.do 社区](https://linux.do/) 对 EdgeSSH 推广的支持，让 EdgeSSH 有机会在社区内发帖分享与交流。
 
-## 致谢
+---
 
-- [Worker Web SSH / cmliu/CF-Workers-WebSSH](https://github.com/cmliu/CF-Workers-WebSSH)：本项目的直接上游与开发基础。
-- [huashengdun/webssh](https://github.com/huashengdun/webssh)：WebSSH 终端与前端兼容 API 参考。
-- [newbietan/CloudSSH](https://github.com/newbietan/CloudSSH)：Cloudflare Workers SSH 实现参考。
-- [crazypeace/huashengdun-webssh](https://github.com/crazypeace/huashengdun-webssh)：WebSSH 二次开发与前端兼容性参考。
+## Contributing
 
-## 许可证
+欢迎提交:
 
-本项目采用 [Apache License 2.0](LICENSE)。使用、修改与分发时，请保留适用的许可证与版权声明。
+**Issues · Bug Reports · Pull Requests · Documentation Improvements**
+
+提交代码前,请先跑一遍:
+
+```bash
+npm run check
+```
+
+涉及 SSH、SFTP 或 Port Forward 的改动,请用你自己拥有授权的服务器来测试。
+
+提交 Issue 时,有一件事拜托一定注意:
+
+> **请不要上传密码、SSH 私钥、Access Token,或是包含敏感信息的日志。**
+
+---
+
+## Acknowledgements
+
+- [cmliu/CF-Workers-WebSSH](https://github.com/cmliu/CF-Workers-WebSSH) — EdgeSSH 的直接上游
+- [huashengdun/webssh](https://github.com/huashengdun/webssh) — WebSSH 与前端 API 参考
+- [newbietan/CloudSSH](https://github.com/newbietan/CloudSSH) — Cloudflare Workers SSH 实现参考
+- [crazypeace/huashengdun-webssh](https://github.com/crazypeace/huashengdun-webssh) — WebSSH 二次开发参考
+
+---
+
+## License
+
+EdgeSSH is licensed under the [Apache License 2.0](LICENSE).
+
+使用、修改与分发时,请保留适用的许可证与版权声明。
+
+---
+
+<div align="center">
+
+<p><strong>EdgeSSH · 你的个人 WebSSH 工作台</strong></p>
+
+<p>SSH infrastructure doesn't need another server to manage it.</p>
+
+**Your servers · Your credentials · Your Cloudflare · Your workspace**
+
+<br />
+
+**[Deploy EdgeSSH →](https://edgessh-docs.pages.dev/deploy/actions)** · [📚 完整文档](https://edgessh-docs.pages.dev/)
+
+</div>

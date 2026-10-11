@@ -1,21 +1,21 @@
 import type { Env } from './types';
 import { SSHSessionDO } from './backend/durable-object';
-import { corsPreflightResponse, corsResponse, httpsRedirect, isProductionHttp, jsonError, secureResponse } from './http-security';
+import { corsPreflightResponse, corsResponse, hasValidWebSocketOrigin, httpsRedirect, isProductionHttp, jsonError, secureResponse } from './http-security';
 import { currentAccount } from './accounts/auth';
+import { authRoute } from './accounts/auth-routes';
+import { authProvider } from './accounts/auth-provider';
 import { hostsRoute } from './accounts/hosts';
+import { snippetsRoute } from './accounts/snippets';
+import { forwardRulesRoute } from './accounts/forward-rules';
 import { apiFailure, json } from './accounts/http';
 import { locateHost } from './accounts/location';
+import { forwardingRoute, trustedForwardRoute } from './forwarding/routes';
 
 export { SSHSessionDO };
 
 function clientAddress(request: Request): string {
   const value = request.headers.get('CF-Connecting-IP') ?? 'local';
   return /^[0-9A-Fa-f:.]{2,64}$/.test(value) ? value.toLowerCase() : 'unknown';
-}
-
-function hasValidWebSocketOrigin(request: Request): boolean {
-  const origin = request.headers.get('Origin');
-  return origin === null || origin === new URL(request.url).origin;
 }
 
 async function sessionTicket(request: Request, env: Env, accountId: string): Promise<Response> {
@@ -128,6 +128,7 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const isApiRequest = url.pathname.startsWith('/api/');
+    const isForwardRequest = url.pathname.startsWith('/_forward/');
     try {
       if (isProductionHttp(request)) {
         if (isApiRequest) return corsResponse(jsonError('HTTPS is required', 403));
@@ -136,7 +137,7 @@ export default {
       }
       // Cookie 认证只接受同源请求；写操作必须有 Origin，阻断跨站表单与 CSRF。
       const origin = request.headers.get('Origin');
-      if (isApiRequest && ((origin && origin !== url.origin)
+      if ((isApiRequest || isForwardRequest) && ((origin && origin !== url.origin)
         || (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && origin !== url.origin)
         || request.headers.get('Sec-Fetch-Site') === 'cross-site')) return jsonError('不允许跨站请求。', 403);
       if (isApiRequest && request.method === 'OPTIONS') {
@@ -145,15 +146,22 @@ export default {
       if (url.pathname === '/api/health' && request.method === 'GET') {
         return corsResponse(secureResponse(Response.json({ status: 'ok', runtime: 'cloudflare-workers', ssh: true }, { headers: { 'Cache-Control': 'no-store' } })));
       }
+      const authentication = await authRoute(request, env);
+      if (authentication) return secureResponse(authentication);
       if (url.hostname.endsWith('.workers.dev') && url.pathname === '/api/diagnostics/location' && request.method === 'GET') {
         const location = await locateHost('8.8.8.8');
         if (!location) return corsResponse(jsonError('位置服务暂时不可用。', 503));
         return corsResponse(json({ status: 'ok', sample: '8.8.8.8', location }));
       }
-      const account = isApiRequest ? await currentAccount(request, env) : null;
-      if (isApiRequest && !account) return jsonError('请先登录。', 401);
-      if (url.pathname === '/api/auth/me' && request.method === 'GET') return json({ account });
+      const account = isApiRequest || isForwardRequest ? await currentAccount(request, env) : null;
+      if ((isApiRequest || isForwardRequest) && !account) return jsonError('请先登录。', 401);
+      // 转发返回目标网站自己的 CSP，不套主应用 CSP；此路径仍必须先通过管理员认证。
+      if (isForwardRequest) return await trustedForwardRoute(request, env, account!.id);
+      if (url.pathname === '/api/auth/me' && request.method === 'GET') return json({ account, provider: authProvider(env) });
       if (url.pathname.startsWith('/api/hosts')) return await hostsRoute(request, env, account!.id, url.pathname);
+      if (url.pathname.startsWith('/api/snippets')) return await snippetsRoute(request, env, account!.id, url.pathname);
+      if (url.pathname.startsWith('/api/forward-rules')) return await forwardRulesRoute(request, env, account!.id, url.pathname);
+      if (url.pathname === '/api/forwarding') return await forwardingRoute(request, env, account!.id);
       if (url.pathname === '/api/session') {
         if (request.method !== 'POST') return corsResponse(jsonError('Method not allowed', 405));
         return corsResponse(await sessionTicket(request, env, account!.id));

@@ -43,6 +43,10 @@ export function isProductionHttp(request: Request): boolean {
   return new URL(request.url).protocol === 'http:' && request.headers.has('CF-Connecting-IP');
 }
 
+export function hasValidWebSocketOrigin(request: Request): boolean {
+  return request.headers.get('Origin') === new URL(request.url).origin;
+}
+
 export function httpsRedirect(request: Request): Response {
   const url = new URL(request.url);
   url.protocol = 'https:';

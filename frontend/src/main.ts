@@ -1,15 +1,19 @@
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import { createElement, Maximize, Minimize } from 'lucide';
 import { historyKey, historyLabel } from './history';
 import { listHosts, hostCredentials, saveHost, removeHost, updateHostSystem, type CloudHost, type Credentials, type HostSystemInfo } from './cloud-api';
 import { Dashboard } from './dashboard';
+import { FilePage } from './file-page';
+import { Snippets } from './snippets';
 import { resolveConnectionControl, resolveConnectionPanel } from './ui-state';
 import { classifyHostKey, SSH_FINGERPRINT_RE, type HostKeyPrompt } from './host-key';
 import { FileManager, collectFileManagerElements } from './file-manager';
 import { FileTree } from './file-tree';
 import { ProcessManager, collectProcessManagerElements, type NetworkSample } from './process-manager';
 import { resetTerminalForConnection } from './terminal-session';
+import { createTerminalTools, type TerminalToolsController } from './terminal-tools';
 import { WebSocketReconnectManager } from './ws-reconnect';
 import type { ReconnectLogEntry } from './ws-reconnect';
 import './style.css';
@@ -59,6 +63,7 @@ interface ServerMessage {
   type?: string;
   event?: string;
   message?: string;
+  retryable?: boolean;
   fingerprint?: string;
   expectedFingerprint?: string;
   keyType?: string;
@@ -106,6 +111,7 @@ const LANGUAGE_STORAGE_KEY = 'workers-webssh.language';
 const MAX_KEY_BYTES = 65_536;
 const PING_INTERVAL_MS = 25_000;
 const CLIENT_CLOSE_SESSION_ERROR = 4000;
+const SERVER_CLOSE_AUTH_DEFECT = 4001;
 const CLIENT_CLOSE_PROTOCOL_ERROR = 4002;
 
 function loadLanguage(): Language {
@@ -290,6 +296,8 @@ const ui = {
   eventMessage: element<HTMLElement>('event-message'),
   fileManagerTab: element<HTMLButtonElement>('file-manager-tab'),
   fileManagerPanel: element<HTMLElement>('file-manager-panel'),
+  fullscreenFiles: element<HTMLButtonElement>('fullscreen-files'),
+  exitFullscreenFiles: element<HTMLButtonElement>('exit-fullscreen-files'),
   fileTree: element<HTMLElement>('file-tree'),
   processManagerTab: element<HTMLButtonElement>('process-manager-tab'),
   processManagerPanel: element<HTMLElement>('process-manager-panel'),
@@ -362,6 +370,7 @@ function applyLanguage(language: Language, persist = false): void {
   if (fileManager) fileManager.setLanguage();
   if (fileTree) fileTree.setLanguage();
   if (processManager) processManager.setLanguage();
+  terminalTools?.refreshLanguage();
 
   if (persist) {
     try { localStorage.setItem(LANGUAGE_STORAGE_KEY, language); } catch { /* Language still applies for this page. */ }
@@ -370,6 +379,7 @@ function applyLanguage(language: Language, persist = false): void {
 
 let profiles: SavedProfile[] = [];
 let dashboard: Dashboard | undefined;
+let filePage: FilePage | undefined;
 let hostKeys: Record<string, string> = {};
 let socket: WebSocket | null = null;
 let connectionState: ConnectionState = 'idle';
@@ -404,6 +414,7 @@ let panelOpen = false;
 let fileManager: FileManager;
 let fileTree: FileTree;
 let processManager: ProcessManager;
+let terminalTools: TerminalToolsController | undefined;
 let sshReconnectManager: WebSocketReconnectManager | null = null;
 let reconnectParams: {
   host: string; port: number; username: string; authMethod: string;
@@ -651,6 +662,12 @@ const fitAddon = new FitAddon();
 terminal.loadAddon(fitAddon);
 terminal.loadAddon(new WebLinksAddon());
 terminal.open(ui.terminalElement);
+terminalTools = createTerminalTools({
+  send: sendTerminalData,
+  focusTerminal: () => terminal.focus(),
+  refitTerminal: () => fitTerminal(true),
+  localize: bilingual,
+});
 fileManager = new FileManager({
   elements: collectFileManagerElements(),
   getLanguage: () => currentLanguage,
@@ -1065,6 +1082,7 @@ function showFormError(message: string, alternate?: string): void {
   currentFormError = messageTranslation(message, alternate);
   ui.formError.textContent = localize(currentFormError);
   ui.formError.hidden = false;
+  if (document.body.dataset.view === 'files') filePage?.setMessage(localize(currentFormError), true);
 }
 
 function toast(message: string, kind: 'info' | 'error' = 'info'): void {
@@ -1079,6 +1097,7 @@ function updateConnectionStatus(message: LocalizedMessage): void {
   currentSessionSubtitle = message;
   const text = localize(message);
   ui.sessionSubtitle.textContent = text;
+  filePage?.setMessage(text);
   if (connectionState === 'connecting') {
     const btnSpan = ui.connect.querySelector<HTMLElement>('span:last-child');
     if (btnSpan) btnSpan.textContent = text;
@@ -1087,6 +1106,8 @@ function updateConnectionStatus(message: LocalizedMessage): void {
 
 function setState(state: ConnectionState, label?: string): void {
   connectionState = state;
+  ui.fullscreenFiles.disabled = state !== 'connected';
+  filePage?.setConnection(state, profiles.find((profile) => passwordContext(profile) === currentTargetKey)?.id, currentTargetLabel);
   const stateLabel = label ?? ({
     idle: bilingual('离线', 'Offline'),
     connecting: bilingual('连接中', 'Connecting'),
@@ -1112,7 +1133,7 @@ function setState(state: ConnectionState, label?: string): void {
   ui.connect.querySelector<HTMLElement>('span:last-child')!.textContent = controlLabel;
   ui.connect.setAttribute('aria-label', controlLabel);
   ui.connect.title = currentSessionId || controlLabel;
-  updateMobileToolbarVisibility();
+  terminalTools?.setConnected(state === 'connected');
 }
 
 function event(message: string, category = 'session', error = false, alternate?: string): void {
@@ -1213,6 +1234,7 @@ function markReady(message = bilingual('交互式 Shell 已就绪', 'Interactive
   });
   startTimers();
   updateConnectionStatus(messageTranslation(message));
+  filePage?.setMessage('');
   event(message, 'ready');
   if (currentInitialCommand && !initialCommandSent) {
     initialCommandSent = true;
@@ -1224,7 +1246,7 @@ function markReady(message = bilingual('交互式 Shell 已就绪', 'Interactive
       sendTerminalData(`${command}\r`);
     }, 120);
   }
-  terminal.focus();
+  if (document.body.dataset.view === 'workspace') terminal.focus();
 }
 
 function sendHostKeyDecision(accept: boolean): void {
@@ -1419,6 +1441,12 @@ function handleServerMessage(message: ServerMessage): void {
     event(text, message.event ?? 'error', true);
     showFormError(text);
     toast(text, 'error');
+    if (message.retryable === false) {
+      // 客户端随后以 4000 关闭会遮住服务端关闭码，先停止重连才能避免重试旧凭据。
+      sshReconnectManager?.reset();
+      sshReconnectManager = null;
+      reconnectParams = null;
+    }
     failActiveConnection(failedSocket, 'SSH session failed', messageTranslation(text));
     return;
   }
@@ -1576,7 +1604,17 @@ function createSshReconnectFactory(): (attempt: number) => Promise<WebSocket> {
 
 /** Handles reconnect lifecycle events and updates the SSH UI accordingly. */
 function handleSshReconnectLog(entry: ReconnectLogEntry): void {
-  if (entry.event === 'give_up') {
+  if (entry.event === 'disconnect' && entry.code === SERVER_CLOSE_AUTH_DEFECT) {
+    // 控制帧丢失时以关闭码兜底；统一覆盖首次连接和重连工厂创建的 socket。
+    sshReconnectManager?.reset();
+    sshReconnectManager = null;
+    reconnectParams = null;
+    const reason = bilingual('SSH 认证或主机密钥确认失败，请检查后重试。', 'SSH authentication or host key approval failed; check the settings and try again.');
+    showFormError(reason);
+    event(reason, 'disconnect', true);
+    toast(reason, 'error');
+    failActiveConnection(socket, 'SSH authentication failed', messageTranslation(reason));
+  } else if (entry.event === 'give_up') {
     // Reconnect exhausted — perform full cleanup that was deferred.
     const reason = bilingual('SSH 重连失败，已达最大重试次数。', 'SSH reconnect failed; maximum retries reached.');
     event(reason, 'disconnect', true);
@@ -1611,7 +1649,7 @@ async function connect(): Promise<void> {
     showFormError(validationError);
     return;
   }
-  dashboard?.openWorkspace();
+  if (document.body.dataset.view !== 'files') dashboard?.openWorkspace();
   if (location.protocol !== 'https:' && !['localhost', '127.0.0.1', '[::1]'].includes(location.hostname)) {
     showFormError(bilingual('发送 SSH 凭据前必须使用 HTTPS。', 'HTTPS is required before SSH credentials can be sent.'));
     return;
@@ -1622,7 +1660,6 @@ async function connect(): Promise<void> {
   const generation = ++connectGeneration;
   const abortController = new AbortController();
   authorizationAbort = abortController;
-  setState('connecting');
   ui.terminalEmpty.hidden = true;
   resetTerminalForConnection(terminal);
   fitTerminal(false);
@@ -1632,11 +1669,13 @@ async function connect(): Promise<void> {
   const username = ui.username.value.trim();
   currentTargetKey = targetKey(host, port, username);
   currentTargetLabel = targetLabel(host, port, username);
+  setState('connecting');
   const pinnedKey = ui.fingerprint.value.trim() || hostKeys[currentTargetKey] || '';
   currentExpectedFingerprint = pinnedKey;
   currentRememberedFingerprint = '';
   if (pinnedKey) ui.fingerprint.value = pinnedKey;
-  currentInitialCommand = ui.initialCommand.value;
+  // 文件管理不应在隐藏终端里执行用户的初始命令；保存的主机配置仍保持原样。
+  currentInitialCommand = document.body.dataset.view === 'files' ? '' : ui.initialCommand.value;
   initialCommandSent = false;
   pendingHostKey = null;
   awaitingHostKeyDecision = false;
@@ -1682,6 +1721,7 @@ async function connect(): Promise<void> {
       id: 'SSH',
       onConnect: createSshReconnectFactory(),
       onLog: handleSshReconnectLog,
+      nonRetryableCloseCodes: [SERVER_CLOSE_AUTH_DEFECT],
     });
     sshReconnectManager.attach(activeSocket);
 
@@ -2033,6 +2073,22 @@ ui.fullscreenTerminal.addEventListener('click', async () => {
   else await ui.terminalCard.requestFullscreen();
 });
 document.addEventListener('fullscreenchange', () => fitTerminal(true));
+ui.fullscreenFiles.append(createElement(Maximize, { 'aria-hidden': 'true' }));
+ui.exitFullscreenFiles.append(createElement(Minimize, { 'aria-hidden': 'true' }));
+ui.fullscreenFiles.addEventListener('click', () => {
+  // 全屏共享面板而非整个页面，保留目录及传输状态，同时移除周围的连接与导航区域。
+  void ui.fileManagerPanel.requestFullscreen().catch(() => {
+    toast(bilingual('无法进入全屏，请检查浏览器的全屏权限。', 'Unable to enter fullscreen. Check your browser fullscreen permissions.'), 'error');
+  });
+});
+ui.exitFullscreenFiles.addEventListener('click', () => void document.exitFullscreen());
+let filesFullscreen = false;
+document.addEventListener('fullscreenchange', () => {
+  const active = document.fullscreenElement === ui.fileManagerPanel;
+  if (active) ui.exitFullscreenFiles.focus();
+  else if (filesFullscreen) ui.fullscreenFiles.focus();
+  filesFullscreen = active;
+});
 ui.fileManagerTab.addEventListener('click', () => toggleWorkspaceTab('files'));
 ui.processManagerTab.addEventListener('click', () => toggleWorkspaceTab('processes'));
 ui.eventToggle.addEventListener('click', () => toggleWorkspaceTab('log'));
@@ -2068,7 +2124,7 @@ ui.resourceNetworkSelect.addEventListener('change', () => {
   resetNetworkBaseline();
   updateNetworkIfaceLabel();
 });
-terminal.onData(sendTerminalData);
+terminal.onData((data) => terminalTools?.handleTerminalData(data));
 new ResizeObserver(() => fitTerminal(true)).observe(ui.terminalStage);
 window.addEventListener('beforeunload', () => {
   fileManager.reset();
@@ -2078,121 +2134,6 @@ window.addEventListener('beforeunload', () => {
   resetNetworkMetric();
   socket?.close(1000, 'Page closed');
 });
-
-// ── Mobile shortcut key toolbar ────────────────────────────────────────────
-
-/** Mapping from descriptive key names to raw terminal escape sequences. */
-const MOBILE_KEY_SEQUENCES: Readonly<Record<string, string>> = Object.freeze({
-  'ctrl-c': '\x03',
-  'ctrl-d': '\x04',
-  'esc':     '\x1b',
-  'tab':     '\x09',
-  'enter':   '\r',
-  'up':      '\x1b[A',
-  'down':    '\x1b[B',
-  'left':    '\x1b[D',
-  'right':   '\x1b[C',
-  'ctrl-z':  '\x1a',
-  'ctrl-l':  '\x0c',
-  'ctrl-r':  '\x12',
-  'ctrl-u':  '\x15',
-  'ctrl-w':  '\x17',
-  'ctrl-k':  '\x0b',
-  'ctrl-a':  '\x01',
-  'ctrl-e':  '\x05',
-  'home':    '\x1b[H',
-  'end':     '\x1b[F',
-  'pgup':    '\x1b[5~',
-  'pgdn':    '\x1b[6~',
-  'delete':  '\x1b[3~',
-});
-
-let mobileToolbarReady = false;
-
-function updateMobileToolbarVisibility(): void {
-  const toolbar = document.getElementById('mobile-toolbar');
-  if (!toolbar) return;
-  // Show toolbar only on touch devices within mobile viewport width.
-  // Aligned with the CSS media query (pointer: coarse) and (max-width: 768px).
-  const isTouchDevice = window.matchMedia('(pointer: coarse) and (max-width: 768px)').matches;
-  const shouldShow = isTouchDevice && connectionState === 'connected';
-  toolbar.hidden = !shouldShow;
-  const panel = document.getElementById('mobile-toolbar-panel');
-  const toggle = document.getElementById('mobile-toolbar-toggle');
-  if (!shouldShow) {
-    if (panel) panel.hidden = true;
-    if (toggle) {
-      toggle.setAttribute('aria-expanded', 'false');
-      toggle.setAttribute('aria-label', bilingual('打开快捷键工具栏', 'Open shortcut toolbar'));
-      toggle.title = bilingual('快捷键', 'Shortcuts');
-    }
-  } else if (toggle && panel) {
-    // Sync toggle state with current panel visibility
-    // (essential after applyLanguage() rewrites aria-label/title from data-i18n-*)
-    const isExpanded = !panel.hidden;
-    toggle.setAttribute('aria-expanded', String(isExpanded));
-    toggle.setAttribute('aria-label', isExpanded
-      ? bilingual('关闭快捷键工具栏', 'Close shortcut toolbar')
-      : bilingual('打开快捷键工具栏', 'Open shortcut toolbar'));
-    toggle.title = isExpanded
-      ? bilingual('关闭快捷键工具栏', 'Close shortcut toolbar')
-      : bilingual('快捷键', 'Shortcuts');
-  }
-}
-
-function initMobileToolbar(): void {
-  if (mobileToolbarReady) return;
-  mobileToolbarReady = true;
-
-  const toggle = document.getElementById('mobile-toolbar-toggle');
-  const panel = document.getElementById('mobile-toolbar-panel');
-  if (!toggle || !panel) return;
-
-  // Toggle expand / collapse
-  toggle.addEventListener('click', (clickEvent: Event) => {
-    clickEvent.stopPropagation();
-    const wasHidden = panel.hidden;
-    panel.hidden = !wasHidden;
-    toggle.setAttribute('aria-expanded', String(wasHidden));
-    toggle.setAttribute('aria-label', wasHidden
-      ? bilingual('关闭快捷键工具栏', 'Close shortcut toolbar')
-      : bilingual('打开快捷键工具栏', 'Open shortcut toolbar'));
-    toggle.title = wasHidden
-      ? bilingual('关闭快捷键工具栏', 'Close shortcut toolbar')
-      : bilingual('快捷键', 'Shortcuts');
-  });
-
-  // Close panel when tapping outside
-  document.addEventListener('click', (clickEvent: MouseEvent) => {
-    const toolbar = document.getElementById('mobile-toolbar');
-    if (!toolbar || toolbar.hidden) return;
-    if (panel.hidden) return;
-    const target = clickEvent.target as HTMLElement;
-    if (!toolbar.contains(target)) {
-      panel.hidden = true;
-      toggle.setAttribute('aria-expanded', 'false');
-      toggle.setAttribute('aria-label', bilingual('打开快捷键工具栏', 'Open shortcut toolbar'));
-      toggle.title = bilingual('快捷键', 'Shortcuts');
-    }
-  });
-
-  // Delegate button clicks — send the escape sequence to the terminal
-  panel.addEventListener('click', (clickEvent: Event) => {
-    const btn = (clickEvent.target as HTMLElement).closest<HTMLElement>('.mobile-key-btn');
-    if (!btn) return;
-    const key = btn.getAttribute('data-key');
-    if (!key) return;
-    const seq = MOBILE_KEY_SEQUENCES[key];
-    if (seq !== undefined && window.wssh) {
-      window.wssh.send(seq);
-    }
-    // Keep the panel open after sending a key so the user can tap
-    // multiple shortcuts without re-expanding every time.
-  });
-
-  // Initial state
-  updateMobileToolbarVisibility();
-}
 
 document.addEventListener('keydown', (keyEvent) => {
   if (keyEvent.key === 'Escape' && panelOpen && !ui.hostKeyDialog.open) {
@@ -2215,9 +2156,36 @@ async function initialize(): Promise<void> {
   ui.sessionSubtitle.textContent = bilingual('选择目标并连接', 'Choose a target and connect');
   ui.eventMessage.textContent = bilingual('Worker 运行时待命', 'Worker runtime standing by');
   initializeCompatibilityAPI();
-  initMobileToolbar();
   applyURLParameters();
+  // 两个视图共用指纹确认与通知，不能随隐藏的终端容器一起消失。
+  document.body.append(ui.hostKeyDialog, ui.toastRegion);
+  filePage = new FilePage(ui.fileManagerPanel, {
+    connect: async (host) => {
+      const loading = applyProfile(host);
+      const selectionGeneration = historyPasswordLoadGeneration;
+      await loading;
+      // 返回总览会作废凭据读取；即使用户立刻回到文件页，也不能启动已经取消的连接。
+      if (selectionGeneration === historyPasswordLoadGeneration && document.body.dataset.view === 'files') await connect();
+    },
+    disconnect: () => disconnect(),
+    openTerminal: () => {
+      dashboard?.openWorkspace();
+      if (connectionState === 'idle' || connectionState === 'error') setPanelOpen(true);
+    },
+  }, fileManager);
   dashboard = new Dashboard({
+    files: filePage,
+    snippets: new Snippets(ui.terminalCard, (snippet) => {
+      // 片段只进入草稿，尤其多行命令不能通过粘贴意外立即执行。
+      const input = document.getElementById('command-editor-input') as HTMLTextAreaElement;
+      if (input.value.trim() && input.value !== snippet.command
+        && !confirm(bilingual('替换命令编辑器中的现有内容？', 'Replace the current command draft?'))) return;
+      input.value = snippet.command;
+      input.dispatchEvent(new Event('input'));
+      if (document.getElementById('command-editor')!.hidden) document.getElementById('command-editor-toggle')!.click();
+      input.focus();
+      toast(bilingual('已填入命令编辑器，确认后再发送。', 'Added to the command editor. Review before sending.'), 'info');
+    }, () => dashboard?.openWorkspace(), () => dashboard?.showSnippets()),
     refresh: async () => {
       profiles = await loadProfiles();
       renderProfiles();

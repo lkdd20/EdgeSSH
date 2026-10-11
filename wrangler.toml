@@ -4,9 +4,8 @@ compatibility_date = "2026-07-01"
 workers_dev = true
 preview_urls = false
 
-routes = [
-  { pattern = "ssh.dltwcnm.ccwu.cc", custom_domain = true }
-]
+# 模板默认使用用户自己的 workers.dev 地址，避免绑定原作者的域名。
+# Actions 可通过 CUSTOM_DOMAIN 配置自定义域名。
 
 [build]
 command = "npm run build:web"
@@ -31,5 +30,5 @@ new_sqlite_classes = ["SSHSessionDO"]
 [[d1_databases]]
 binding = "DB"
 database_name = "edgessh-accounts"
-database_id = "2c1b7a95-a5d6-4a72-a8d2-4132b74aa268"
+# 部署脚本在目标账户中查找或创建数据库，不把账户专属 ID 留在模板里。
 migrations_dir = "migrations"

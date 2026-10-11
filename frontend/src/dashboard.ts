@@ -1,10 +1,15 @@
 import { api, saveHost, removeHost, refreshHostLocation, type CloudHost, type HostInput } from './cloud-api';
 import type { HostGlobe } from './globe';
+import type { FilePage } from './file-page';
+import type { Snippets } from './snippets';
+import { ForwardPage } from './forward-page';
 import { countryFlag } from './flags';
 import { systemIcon } from './os-icons';
 import './dashboard.css';
 
 interface DashboardActions {
+  files: FilePage;
+  snippets: Snippets;
   refresh(): Promise<CloudHost[]>;
   connect(host: CloudHost): Promise<void>;
   quickConnect(): void;
@@ -15,6 +20,9 @@ const icons = {
   home: '<path d="m3 10 9-7 9 7v10H3Z"/><path d="M9 20v-7h6v7"/>',
   server: '<rect x="4" y="3" width="16" height="7" rx="2"/><rect x="4" y="14" width="16" height="7" rx="2"/><path d="M8 6.5h.01M8 17.5h.01M15 6.5h2M15 17.5h2"/>',
   terminal: '<path d="m5 6 6 6-6 6m8 0h6"/>',
+  forward: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 8h18M7 14h10m-3-3 3 3-3 3"/>',
+  snippets: '<path d="M9 3H7a2 2 0 0 0-2 2v4l-2 3 2 3v4a2 2 0 0 0 2 2h2m6-18h2a2 2 0 0 1 2 2v4l2 3-2 3v4a2 2 0 0 1-2 2h-2"/>',
+  folder: '<path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M3 9h18"/>',
   shield: '<path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z"/><path d="m8 12 3 3 5-6"/>',
   search: '<circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/>',
   refresh: '<path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/>',
@@ -30,9 +38,11 @@ export class Dashboard {
   private busy = false;
   private isHome = true;
   private paused = false;
+  private authenticated = false;
   private returnFocus?: HTMLElement;
   private readonly dialog: HTMLDialogElement;
   private readonly form: HTMLFormElement;
+  private readonly forwarding = new ForwardPage();
 
   constructor(private readonly actions: DashboardActions) {
     this.root.id = 'dashboard';
@@ -41,14 +51,17 @@ export class Dashboard {
         <a class="home-brand" href="/" aria-label="EdgeSSH 首页"><span class="brand-chevron">›_</span>Edge<span>SSH</span></a>
         <label class="home-search">${icon('search')}<input id="host-search" type="search" placeholder="搜索主机、分组或 IP 地址" aria-label="搜索主机"><kbd>Ctrl K</kbd></label>
         <button class="home-button primary header-add" data-add>＋ 新建主机</button>
-        <div class="home-account"><span class="account-avatar">A</span><span id="account-label">验证身份中</span><a href="/cdn-cgi/access/logout" title="退出 Access">退出</a></div>
+        <div class="home-account"><span class="account-avatar">A</span><span id="account-label">验证身份中</span><a id="account-action" href="/auth/login" title="管理员登录">登录</a></div>
       </header>
       <div class="home-layout">
         <nav class="home-rail" aria-label="主导航">
-          <button class="rail-item selected" aria-current="page">${icon('home')}<span>总览</span></button>
+          <button class="rail-item selected" id="rail-overview" aria-current="page">${icon('home')}<span>总览</span></button>
           <button class="rail-item" id="rail-hosts">${icon('server')}<span>主机</span></button>
+          <button class="rail-item" id="rail-files">${icon('folder')}<span>文件管理</span></button>
+          <button class="rail-item" id="rail-snippets">${icon('snippets')}<span>代码片段</span></button>
+          <button class="rail-item" id="rail-forward">${icon('forward')}<span>端口转发</span></button>
           <button class="rail-item" id="quick-connect">${icon('terminal')}<span>快速连接</span></button>
-          <span class="rail-security" title="Cloudflare Access 身份认证">${icon('shield')}<span>Access<br>已保护</span></span>
+          <span class="rail-security" title="管理员身份认证">${icon('shield')}<span id="auth-provider-label">身份<br>保护</span></span>
         </nav>
         <main class="home-content">
           <div id="home-notice" class="home-notice" role="status" hidden></div>
@@ -67,13 +80,13 @@ export class Dashboard {
             </section>
           </div>
           <section class="home-bottom" aria-label="存储与连接信息">
-            <div class="storage-note">${icon('shield')}<div><strong>凭据留在你的加密保险箱</strong><p>Cloudflare Access 认证 · D1 加密存储 · 密钥仅在 Worker</p></div><span class="storage-tag">AES-256-GCM</span></div>
+            <div class="storage-note">${icon('shield')}<div><strong>凭据留在你的加密保险箱</strong><p>管理员认证 · D1 加密存储 · 密钥仅在 Worker</p></div><span class="storage-tag">AES-256-GCM</span></div>
             <button class="quick-card" id="bottom-quick">${icon('terminal')}<span><strong>临时连接</strong><small>打开完整 SSH 工作台</small></span><span>↗</span></button>
           </section>
           <footer class="home-footer"><span>EdgeSSH / Private workspace</span><span>首次保存时查询公网 IP 位置，失败时仍可连接。</span><a href="https://mappojs.com/" target="_blank" rel="noopener noreferrer">地图数据与灵感来自 Mappo.js</a></footer>
         </main>
       </div>
-      <dialog class="host-dialog" aria-labelledby="host-dialog-title">
+      <dialog id="host-editor-dialog" class="host-dialog" aria-labelledby="host-dialog-title">
         <form id="cloud-host-form" autocomplete="off">
           <div class="dialog-heading"><div><p class="home-eyebrow">ENCRYPTED HOST</p><h2 id="host-dialog-title">添加主机</h2></div><button type="button" class="home-button close-dialog" aria-label="关闭">×</button></div>
           <p class="dialog-intro">保存到你的云端主机库，不会写入浏览器本地存储。</p>
@@ -99,17 +112,38 @@ export class Dashboard {
         </form>
       </dialog>`;
     document.body.prepend(this.root);
-    this.dialog = this.get<HTMLDialogElement>('.host-dialog');
+    this.get('.home-layout').append(this.actions.files.root);
+    this.get('.home-layout').append(this.actions.snippets.page);
+    this.get('.home-layout').append(this.forwarding.root);
+    this.dialog = this.get<HTMLDialogElement>('#host-editor-dialog');
     this.form = this.get<HTMLFormElement>('#cloud-host-form');
+    this.get('#account-action').addEventListener('click', async (event) => {
+      if (!this.authenticated) return;
+      event.preventDefault();
+      try {
+        const { redirect } = await api<{ redirect: string }>('/api/auth/logout', 'POST');
+        location.assign(redirect);
+      } catch (error) { this.notice(error instanceof Error ? error.message : '退出失败，请重试。'); }
+    });
+    window.addEventListener('auth-required', () => this.signedOut());
     this.root.querySelectorAll<HTMLButtonElement>('[data-add]').forEach((button) => button.addEventListener('click', () => this.openEditor()));
     this.root.querySelectorAll('.close-dialog').forEach((button) => button.addEventListener('click', () => this.closeEditor()));
     this.dialog.addEventListener('cancel', (event) => { if (this.busy) event.preventDefault(); });
     this.dialog.addEventListener('close', () => { this.form.reset(); this.editing = undefined; this.returnFocus?.focus(); });
     this.get('#host-search').addEventListener('input', () => this.renderList());
     this.get('#refresh-hosts').addEventListener('click', () => void this.refresh());
-    this.get('#rail-hosts').addEventListener('click', () => this.get<HTMLInputElement>('#host-search').focus());
+    for (const id of ['#rail-overview', '#rail-hosts']) this.get(id).addEventListener('click', () => {
+      if (!this.actions.files.confirmLeave()) return;
+      if (!this.isHome) this.actions.leaveWorkspace();
+      this.show();
+      if (id === '#rail-hosts') this.get<HTMLInputElement>('#host-search').focus();
+    });
+    this.get('#rail-files').addEventListener('click', () => this.showFiles());
+    this.get('#rail-snippets').addEventListener('click', () => this.showSnippets());
+    this.get('#rail-forward').addEventListener('click', () => this.showForwarding());
     for (const id of ['#quick-connect', '#bottom-quick']) this.get(id).addEventListener('click', () => {
-      if (this.busy) return;
+      if (this.busy || !this.actions.files.confirmLeave()) return;
+      this.actions.leaveWorkspace();
       this.openWorkspace(); this.actions.quickConnect();
     });
     this.field('authMethod').addEventListener('change', () => this.updateCredentialFields());
@@ -127,8 +161,19 @@ export class Dashboard {
     });
     const back = document.createElement('button');
     back.className = 'icon-button home-back'; back.textContent = '← 主机总览'; back.type = 'button';
-    back.addEventListener('click', () => { this.actions.leaveWorkspace(); this.show(); void this.refresh(); });
+    back.addEventListener('click', () => {
+      if (!this.actions.files.confirmLeave()) return;
+      this.actions.leaveWorkspace(); this.show(); void this.refresh();
+    });
     document.querySelector('#app .topbar-actions')!.prepend(back);
+    const files = document.createElement('button');
+    files.className = 'icon-button home-back'; files.textContent = '文件管理'; files.type = 'button';
+    files.addEventListener('click', () => this.showFiles());
+    document.querySelector('#app .topbar-actions')!.prepend(files);
+    const forwarding = document.createElement('button');
+    forwarding.className = 'icon-button home-back'; forwarding.textContent = '端口转发'; forwarding.type = 'button';
+    forwarding.addEventListener('click', () => this.showForwarding());
+    document.querySelector('#app .topbar-actions')!.append(forwarding);
     this.show();
   }
 
@@ -139,15 +184,17 @@ export class Dashboard {
 
   async start(): Promise<void> {
     try {
-      const { account } = await api<{ account: { username: string } }>('/api/auth/me');
+      const { account, provider } = await api<{ account: { username: string }; provider: string }>('/api/auth/me');
+      this.authenticated = true;
       this.get('#account-label').textContent = account.username;
       this.get('.account-avatar').textContent = account.username.slice(0, 1).toUpperCase();
+      this.get('#auth-provider-label').textContent = provider === 'github' ? 'GitHub' : 'Access';
+      const action = this.get<HTMLAnchorElement>('#account-action');
+      action.textContent = '退出'; action.title = '退出登录'; action.href = '/api/auth/logout';
       await this.refresh();
     } catch (error) {
-      this.notice(error instanceof Error ? error.message : '无法验证 Access 身份。');
-      this.get('#account-label').textContent = '未认证';
-      this.get('#host-list').textContent = '请先通过 Cloudflare Access 登录。';
-      this.root.querySelectorAll<HTMLButtonElement>('[data-add], #quick-connect, #bottom-quick').forEach((button) => { button.disabled = true; });
+      this.signedOut();
+      this.notice(error instanceof Error ? error.message : '无法验证管理员身份。');
     }
     try {
       const { HostGlobe } = await import('./globe');
@@ -159,6 +206,8 @@ export class Dashboard {
 
   setHosts(hosts: CloudHost[]): void {
     this.hosts = hosts;
+    this.actions.files.setHosts(hosts);
+    this.forwarding.setHosts(hosts);
     if (this.group && !hosts.some((host) => host.group === this.group)) this.group = '';
     this.renderFilters(); this.renderList();
     this.globe?.setHosts(hosts);
@@ -175,22 +224,91 @@ export class Dashboard {
   }
 
   show(): void {
+    this.forwarding.hide();
+    this.actions.files.hide();
+    this.actions.snippets.hide();
     this.isHome = true; this.root.hidden = false;
+    this.get('.home-content').hidden = false;
+    this.selectNavigation('rail-overview');
     document.getElementById('app')!.hidden = true;
     document.body.dataset.view = 'dashboard';
     this.globe?.setActive(!this.paused);
   }
 
   openWorkspace(): void {
+    this.forwarding.hide();
+    this.actions.files.hide();
+    this.actions.snippets.hide();
     this.isHome = false; this.root.hidden = true;
     document.getElementById('app')!.hidden = false;
     document.body.dataset.view = 'workspace';
     this.globe?.setActive(false);
     window.dispatchEvent(new Event('resize'));
+    this.actions.snippets.load();
+  }
+
+  showFiles(): void {
+    this.forwarding.hide();
+    this.actions.snippets.hide();
+    this.isHome = false; this.root.hidden = false;
+    this.get('.home-content').hidden = true;
+    document.getElementById('app')!.hidden = true;
+    document.body.dataset.view = 'files';
+    this.selectNavigation('rail-files');
+    this.globe?.setActive(false);
+    this.actions.files.show();
+  }
+
+  showSnippets(): void {
+    if (!this.actions.files.confirmLeave()) return;
+    this.forwarding.hide();
+    // 仅切换视图，不结束 SSH；在片段页编辑后可回到同一会话。
+    this.actions.files.hide();
+    this.isHome = false; this.root.hidden = false;
+    this.get('.home-content').hidden = true;
+    document.getElementById('app')!.hidden = true;
+    document.body.dataset.view = 'snippets';
+    this.selectNavigation('rail-snippets');
+    this.globe?.setActive(false);
+    this.actions.snippets.show();
+  }
+
+  showForwarding(): void {
+    if (!this.actions.files.confirmLeave()) return;
+    this.actions.files.hide();
+    this.actions.snippets.hide();
+    this.isHome = false; this.root.hidden = false;
+    this.get('.home-content').hidden = true;
+    document.getElementById('app')!.hidden = true;
+    document.body.dataset.view = 'forward';
+    this.selectNavigation('rail-forward');
+    this.globe?.setActive(false);
+    this.forwarding.show();
+  }
+
+  private selectNavigation(id: string): void {
+    this.root.querySelectorAll<HTMLElement>('.rail-item').forEach((button) => {
+      button.classList.toggle('selected', button.id === id);
+      if (button.id === id) button.setAttribute('aria-current', 'page');
+      else button.removeAttribute('aria-current');
+    });
   }
 
   private notice(message: string): void {
     const notice = this.get('#home-notice'); notice.textContent = message; notice.hidden = false;
+  }
+
+  private signedOut(): void {
+    this.actions.leaveWorkspace();
+    this.actions.snippets.clear();
+    this.authenticated = false;
+    this.get('#account-label').textContent = '未登录';
+    const action = this.get<HTMLAnchorElement>('#account-action');
+    action.href = '/auth/login'; action.textContent = '登录'; action.title = '管理员登录';
+    this.setHosts([]);
+    this.get('#host-list').textContent = '请点击右上角「登录」验证管理员身份。';
+    this.root.querySelectorAll<HTMLButtonElement>('[data-add], #quick-connect, #bottom-quick, #rail-snippets').forEach((button) => { button.disabled = true; });
+    this.show();
   }
 
   private renderFilters(): void {

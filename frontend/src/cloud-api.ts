@@ -47,10 +47,14 @@ export async function api<T>(path: string, method = 'GET', body?: unknown): Prom
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!response.headers.get('Content-Type')?.includes('application/json')) {
-    throw new APIError('Access 登录已过期，请刷新页面重新登录。', 401);
+    window.dispatchEvent(new Event('auth-required'));
+    throw new APIError('登录已过期，请重新登录。', 401);
   }
   const data = await response.json();
-  if (!response.ok) throw new APIError(typeof data.error === 'string' ? data.error : '请求失败，请重试。', response.status);
+  if (!response.ok) {
+    if (response.status === 401) window.dispatchEvent(new Event('auth-required'));
+    throw new APIError(typeof data.error === 'string' ? data.error : '请求失败，请重试。', response.status);
+  }
   return data as T;
 }
 

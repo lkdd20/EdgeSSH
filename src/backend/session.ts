@@ -49,8 +49,18 @@ import { encodeString, readUint32, toBufferSource } from '../ssh/utils';
 import { parseTopSnapshot } from './top-parser';
 import { retainTrailingMarkerPrefix } from './process-framing';
 import { parseSystemProbe, SYSTEM_PROBE_COMMAND } from './system-info';
+import { ForwardChannel } from '../forwarding/channel';
 
 type Cipher = SSHAESGCMCipher | SSHAESCTRCipher;
+
+// 凭据或主机信任已被拒绝时，重复连接不能解决问题，还可能触发远端账户锁定。
+export class SSHAuthDefectError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SSHAuthDefectError';
+  }
+}
+
 type Phase = 'version' | 'kex' | 'host-confirm' | 'auth' | 'pty' | 'shell' | 'ready' | 'closed';
 interface PendingSFTPChannelOpen {
   readonly channelID: number;
@@ -136,6 +146,7 @@ export class SSHSession {
   private readonly parser = new SSHPacketParser();
   private readonly shellChannel = new SSHChannel();
   private readonly channels = new Map<number, SSHChannel>([[0, this.shellChannel]]);
+  private readonly forwards = new Map<number, ForwardChannel>();
   private readonly config: SSHConnectionConfig;
   private readonly ws: WebSocket;
   private readonly socket: Socket;
@@ -208,9 +219,33 @@ export class SSHSession {
     this.readTask = this.readLoop();
   }
 
+  isForwardReady(): boolean { return this.config.mode === 'forward' && this.phase === 'ready'; }
+
+  async openForward(port: number): Promise<ForwardChannel> {
+    if (!this.isForwardReady()) throw new Error('Forwarding SSH connection is not ready');
+    if (this.forwards.size >= 24) throw new Error('Too many forwarding requests');
+    const id = this.nextChannelID++;
+    const forward = new ForwardChannel({
+      send: (payload) => this.sendEncrypted(payload),
+      data: (channel, chunk) => this.sendChannelData(channel, chunk),
+      remove: () => { this.forwards.delete(id); },
+    });
+    this.forwards.set(id, forward);
+    try {
+      // 只开放所选 SSH 主机的 IPv4 回环服务，不提供任意内网目标代理。
+      await this.sendEncrypted(forward.channel.buildOpenDirectTCPIP(id, '127.0.0.1', port));
+      await forward.opened;
+      return forward;
+    } catch (error) {
+      forward.abort(new Error('Unable to open forwarding channel'));
+      throw error;
+    }
+  }
+
   async handleClientMessage(message: string | ArrayBuffer): Promise<void> {
     if (this.phase === 'closed') return;
     if (message instanceof ArrayBuffer) {
+      if (this.config.mode === 'forward') throw new Error('Terminal input is disabled for forwarding sessions');
       if (message.byteLength > 64 * 1024) throw new Error('Binary terminal input exceeds 64 KiB');
       this.queueInput(new Uint8Array(message));
       return;
@@ -231,6 +266,7 @@ export class SSHSession {
       this.sendJson({ type: 'pong' });
       return;
     }
+    if (this.config.mode === 'forward') throw new Error('Terminal input is disabled for forwarding sessions');
     const resize = value.type === 'resize'
       ? [value.cols, value.rows]
       : Array.isArray(value.resize) ? value.resize : null;
@@ -246,9 +282,11 @@ export class SSHSession {
     throw new Error('Unsupported WebSocket message');
   }
 
-  close(normal = false): void {
+  close(normal = false, failureCode = 1011): void {
     if (this.phase === 'closed') return;
     this.phase = 'closed';
+    for (const forward of this.forwards.values()) forward.abort(new Error('SSH session closed'));
+    this.forwards.clear();
     if (this.keepaliveTimer) clearInterval(this.keepaliveTimer);
     if (this.shellTimer) clearTimeout(this.shellTimer);
     this.keepaliveTimer = null;
@@ -280,7 +318,7 @@ export class SSHSession {
     try { this.writer?.releaseLock(); } catch { /* already released */ }
     this.writer = null;
     try { this.socket.close(); } catch { /* already closed */ }
-    try { this.ws.close(normal ? 1000 : 1011, normal ? 'Session closed' : 'SSH session failed'); } catch { /* already closed */ }
+    try { this.ws.close(normal ? 1000 : failureCode, normal ? 'Session closed' : 'SSH session failed'); } catch { /* already closed */ }
   }
 
   private async readLoop(): Promise<void> {
@@ -471,12 +509,12 @@ export class SSHSession {
     const keyType = this.decoder.decode(hostKey.subarray(4, 4 + keyTypeLength));
     if (!this.isHostKeyAlgorithmCompatible(this.hostKeyAlgorithm, keyType)) throw new Error(`Server used ${keyType}, but negotiated ${this.hostKeyAlgorithm ?? 'no host key algorithm'}`);
     const fingerprint = `SHA256:${this.base64(new Uint8Array(await crypto.subtle.digest('SHA-256', toBufferSource(hostKey))))}`;
-    if (!await this.verifyHostSignature(hostKey, signature, hash)) throw new Error('SSH host key signature verification failed');
+    if (!await this.verifyHostSignature(hostKey, signature, hash)) throw new SSHAuthDefectError('SSH host key signature verification failed');
     const trust = classifyHostKey(this.config.expectedFingerprint, fingerprint);
     if (trust === 'trusted') {
       this.sendJson({ type: 'host_key', fingerprint, keyType, trusted: true });
     } else if (!await this.confirmHostKey(fingerprint, keyType, trust === 'changed' ? this.config.expectedFingerprint : undefined)) {
-      throw new Error('Host key was not accepted');
+      throw new SSHAuthDefectError('Host key was not accepted');
     }
     this.status('host_key_verified', `Host key verified (${keyType})`);
 
@@ -633,6 +671,12 @@ export class SSHSession {
       if (!this.authRequestSent) throw new Error('SSH authentication completed before credentials were sent');
       this.config.password = undefined;
       this.config.privateKey = undefined;
+      if (this.config.mode === 'forward') {
+        this.phase = 'ready';
+        this.startKeepalive();
+        this.sendJson({ type: 'ready' });
+        return;
+      }
       this.status('auth_success', 'SSH authentication succeeded; opening terminal');
       this.phase = 'pty';
       this.startKeepalive();
@@ -651,13 +695,15 @@ export class SSHSession {
         return;
       }
       this.config.password = undefined;
-      throw new Error('SSH authentication failed');
+      throw new SSHAuthDefectError('SSH authentication failed');
     }
   }
 
   private async handleChannel(type: number, payload: Uint8Array): Promise<void> {
     if (payload.length < 5) throw new Error('Malformed SSH channel message');
     const channelID = readUint32(payload, 1);
+    const forward = this.forwards.get(channelID);
+    if (forward) { await forward.handle(type, payload); return; }
     const channel = this.channels.get(channelID);
     if (!channel) throw new Error('SSH channel message has an unknown recipient');
     const isShell = channel === this.shellChannel;
@@ -1695,7 +1741,9 @@ export class SSHSession {
   private sendJson(value: unknown): void { if (this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(value)); }
   private fail(error: unknown, event: string): void {
     const message = error instanceof Error ? error.message : String(error);
-    this.sendJson({ type: 'error', event, message });
-    this.close();
+    // 握手由 readLoop 异步推进，必须在这里分类，start() 的调用方无法捕获这些失败。
+    const retryable = !(error instanceof SSHAuthDefectError);
+    this.sendJson({ type: 'error', event, message, ...(retryable ? {} : { retryable: false }) });
+    this.close(false, retryable ? 1011 : 4001);
   }
 }

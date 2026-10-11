@@ -3,6 +3,8 @@ import { parseConnectMessage, type Env } from '../types';
 import { assertPublicTarget, toSocketHostname } from './security';
 import { createTicket, verifyTicket } from './security';
 import { SSHSession } from './session';
+import { ForwardingState } from '../forwarding/state';
+import { FORWARD_RETENTION_MS, previewError } from '../forwarding/security';
 
 interface MainAttachment { role: 'main'; phase: 'waiting' | 'connecting' | 'connected' }
 interface SFTPAttachment { role: 'sftp'; phase: 'connected' }
@@ -25,11 +27,13 @@ type AuxiliaryAttachToken = SFTPAttachToken;
 const TICKET_STORAGE_KEY = 'session-ticket';
 const SFTP_ATTACH_TOKEN_TTL_MS = 10 * 60 * 1000;
 const SFTP_ATTACH_TOKEN_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+interface RetainedForwarding { expiresAt: number; timeout: ReturnType<typeof setTimeout> }
 
 export class SSHSessionDO implements DurableObject {
   private readonly state: DurableObjectState;
   private readonly env: Env;
   private readonly sessions = new Map<WebSocket, SSHSession>();
+  private readonly forwarding = new ForwardingState();
   private readonly pendingConnections = new Map<WebSocket, PendingConnection>();
   private readonly deadlines = new Map<WebSocket, ReturnType<typeof setTimeout>>();
   private readonly sftpAttachTokens = new Map<string, SFTPAttachToken>();
@@ -42,6 +46,7 @@ export class SSHSessionDO implements DurableObject {
   private readonly processSessions = new Map<WebSocket, SSHSession>();
   private readonly processOwners = new Map<WebSocket, WebSocket>();
   private readonly processWebSocketsByMain = new Map<WebSocket, Set<WebSocket>>();
+  private readonly retainedForwarding = new Map<WebSocket, RetainedForwarding>();
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
@@ -60,6 +65,8 @@ export class SSHSessionDO implements DurableObject {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    // 此入口只由独立预览 Worker 的 DO binding 调用，不暴露在主站 HTTP 路由中。
+    if (url.pathname === '/preview-launch' || url.pathname === '/preview-http') return this.forwarding.preview(request);
     const accountId = request.headers.get('x-account-id');
     if (!accountId) return Response.json({ error: 'Authentication required' }, { status: 401 });
     if (url.pathname === '/ticket' && request.method === 'POST') {
@@ -80,6 +87,30 @@ export class SSHSessionDO implements DurableObject {
     // 主通道和辅助通道均绑定签发票据的账户，持有别人的 URL 也不能附着会话。
     if (await this.state.storage.get('account-id') !== accountId) {
       return Response.json({ error: 'Session owner mismatch' }, { status: 403 });
+    }
+    if (url.pathname === '/forward-http') return this.forwarding.trusted(request);
+    if (url.pathname === '/forward') {
+      if (request.method === 'GET') {
+        return Response.json(this.forwarding.status(this.forwardingRetentionDeadline()), {
+          headers: { 'Cache-Control': 'no-store' },
+        });
+      }
+      if (request.method === 'DELETE') {
+        this.stopForwarding();
+        return Response.json({ ok: true }, { headers: { 'Cache-Control': 'no-store' } });
+      }
+      if (request.method !== 'POST') return previewError('Method not allowed', 405);
+      const session = [...this.sessions.values()].find((item) => item.isForwardReady());
+      if (!session) return previewError('请先建立端口转发 SSH 连接。', 409);
+      const { port, mode } = await request.json<{ port: number; mode: 'trusted' | 'isolated' }>();
+      const origin = request.headers.get('x-preview-origin');
+      if (!Number.isInteger(port) || port < 1 || port > 65535 || !origin
+        || (mode !== 'trusted' && mode !== 'isolated')) return previewError('Invalid forwarding configuration', 400);
+      try {
+        return await this.forwarding.create(session, port, origin, this.state.id.toString(), mode,
+          this.forwardingRetentionDeadline(session));
+      }
+      catch { return previewError('远端端口不可达或 SSH 服务未允许 TCP 转发。', 502); }
     }
     if (url.pathname === '/sftp') return this.attachSFTP(request);
     if (url.pathname === '/processes') return this.attachProcesses(request);
@@ -418,7 +449,21 @@ export class SSHSessionDO implements DurableObject {
     this.deadlines.delete(ws);
   }
 
-  private cleanup(ws: WebSocket): void {
+  private cleanup(ws: WebSocket, force = false): void {
+    const session = this.sessions.get(ws);
+    if (!force && session && this.forwarding.owns(session)) {
+      if (!this.retainedForwarding.has(ws)) {
+        // 管理页断开不等于用户停止；短暂保留底层 SSH，允许刷新或切页后回来主动关闭。
+        const expiresAt = Date.now() + FORWARD_RETENTION_MS;
+        const timeout = setTimeout(() => this.cleanup(ws, true), FORWARD_RETENTION_MS);
+        this.retainedForwarding.set(ws, { expiresAt, timeout });
+      }
+      return;
+    }
+    const retained = this.retainedForwarding.get(ws);
+    if (retained) clearTimeout(retained.timeout);
+    this.retainedForwarding.delete(ws);
+    if (!session || this.forwarding.currentSession() === session) this.forwarding.clear();
     this.clearDeadline(ws);
     const token = this.sftpTokenByMainWebSocket.get(ws);
     if (token) this.deleteSFTPAttachToken(token);
@@ -448,6 +493,23 @@ export class SSHSessionDO implements DurableObject {
     }
     this.sessions.get(ws)?.close(true);
     this.sessions.delete(ws);
+  }
+
+  private forwardingRetentionDeadline(session = this.forwarding.currentSession()): number | undefined {
+    if (!session) return undefined;
+    for (const [ws, retained] of this.retainedForwarding) {
+      if (this.sessions.get(ws) === session) return retained.expiresAt;
+    }
+    return undefined;
+  }
+
+  private stopForwarding(): void {
+    const session = this.forwarding.currentSession();
+    this.forwarding.stop();
+    if (!session) return;
+    for (const [ws, current] of this.sessions) {
+      if (current === session) this.cleanup(ws, true);
+    }
   }
 
   private cleanupSFTPWebSocket(ws: WebSocket): void {

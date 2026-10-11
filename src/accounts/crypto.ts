@@ -12,10 +12,14 @@ export async function digest(value: string): Promise<string> {
   return base64(new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(value))));
 }
 
-async function encryptionKey(secret: string): Promise<CryptoKey> {
+export function encryptionKeyBytes(secret: string): Uint8Array<ArrayBuffer> {
   const key = unbase64(secret);
   if (key.length !== 32) throw new Error('ENCRYPTION_KEY must be 32 bytes encoded as base64');
-  return crypto.subtle.importKey('raw', key, 'AES-GCM', false, ['encrypt', 'decrypt']);
+  return key;
+}
+
+async function encryptionKey(secret: string): Promise<CryptoKey> {
+  return crypto.subtle.importKey('raw', encryptionKeyBytes(secret), 'AES-GCM', false, ['encrypt', 'decrypt']);
 }
 
 export async function encryptHost(value: unknown, secret: string, accountId: string, hostId: string): Promise<string> {

@@ -37,5 +37,6 @@ export function demoApiResult(path: string, method: string): unknown | undefined
   if (method !== 'GET') return undefined;
   if (path === '/api/auth/me') return { account: { username: 'Demo Admin' } };
   if (path === '/api/hosts') return { hosts: DEMO_HOSTS };
+  if (path === '/api/forward-rules') return { rules: [] };
   return undefined;
 }
