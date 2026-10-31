@@ -40,7 +40,7 @@ export class AgentCliPage {
       </section>
       <footer class="agent-cli-boundaries">
         <p>${text('CLI 与网页拥有相同的远端权限。未知或变化的主机指纹必须先核实；不向 Agent 提供 Access 令牌或 SSH 私钥。', 'The CLI has the same remote permissions as the website. Verify unknown or changed host keys; do not give your agent Access tokens or SSH private keys.')}</p>
-        <p>${text('CLI 不内置 AI 或 MCP Server。单文件上限 64 MiB，默认拒绝覆盖；写入与删除前应明确授权范围并备份。', 'No built-in AI or MCP server. Files are limited to 64 MiB; overwrites are rejected by default. Authorize and back up remote changes before writes or deletions.')}</p>
+        <p>${text('CLI 不内置 AI 或 MCP Server。上传上限 2 GiB，下载上限 64 MiB，默认拒绝覆盖，不支持断点续传。大文件需 CLI 0.2.0 及配套服务端；写入与删除前应明确授权范围并备份。', 'No built-in AI or MCP server. Uploads: 2 GiB; downloads: 64 MiB. No resume; overwrites are rejected by default. Large uploads require CLI 0.2.0 and an updated server. Authorize and back up remote changes.')}</p>
       </footer>
       <p class="agent-cli-copy-status" role="status" aria-live="polite"></p>`;
 
